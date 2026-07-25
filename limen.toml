@@ -1,0 +1,19 @@
+[module]
+name = "autoruns"
+version = "0.1.0"
+language = "native"
+entry = "autoruns"
+abi = "native"
+description = "Lists programs that auto-start on THIS machine — Windows Run keys & startup folders, Linux systemd/cron/autostart."
+authors = ["Limen"]
+repo = "CRC-BARRACUDA/limen-autoruns"
+
+[provides]
+capabilities = ["autoruns.local"]
+
+# Linux: spawns systemctl / crontab to enumerate enabled units and user cron jobs.
+[permissions]
+subprocess = true
+# Fully enumerating system-wide autostart/persistence can need admin on some hosts
+# (e.g. Windows). Informational heads-up only — nothing is gated.
+may_require_admin = true

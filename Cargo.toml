@@ -1,0 +1,22 @@
+# Standalone package (it lives inside the Limen repo tree but is its own module).
+[workspace]
+
+[package]
+name = "autoruns"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Lists programs that auto-start on THIS machine (Windows Run keys / Linux systemd, cron, autostart)."
+repository = "https://github.com/CRC-BARRACUDA/limen-autoruns"
+
+[lib]
+name = "autoruns"
+path = "lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+limen-sdk-rust = { git = "https://github.com/CRC-BARRACUDA/Limen.git" }
+
+# Windows-only: read the registry Run/RunOnce keys.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
