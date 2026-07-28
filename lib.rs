@@ -172,9 +172,9 @@ fn row_cells(d: &Value) -> Vec<String> {
 /// to open — a systemd unit is *named*, not a path, and some locations are
 /// labels or missing files, so those rows simply get no open action.
 fn open_kind(d: &Value) -> Option<(&'static str, &'static str, String)> {
-    let source = cell(d, "source");
     let location = cell(d, "location");
-    if source.starts_with("registry") {
+    // A registry location (any Windows ASEP source) opens in regedit.
+    if is_registry_location(&location) {
         return Some(("Open in Registry", "registry", to_regedit(&location)));
     }
     let p = std::path::Path::new(&location);
@@ -185,6 +185,14 @@ fn open_kind(d: &Value) -> Option<(&'static str, &'static str, String)> {
     } else {
         None // systemd unit, or a path that doesn't exist
     }
+}
+
+/// Whether `loc` names a Windows registry key (rather than a filesystem path).
+fn is_registry_location(loc: &str) -> bool {
+    loc.starts_with(r"HKLM\")
+        || loc.starts_with(r"HKCU\")
+        || loc.starts_with("HKEY_")
+        || loc.starts_with(r"Computer\")
 }
 
 /// The right-click menu for one entry: About, plus an open action only when the
