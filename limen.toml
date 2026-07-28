@@ -1,6 +1,6 @@
 [module]
 name = "autoruns"
-version = "0.1.0"
+version = "0.2.0"
 language = "native"
 entry = "autoruns"
 abi = "native"
@@ -10,6 +10,10 @@ repo = "CRC-BARRACUDA/limen-autoruns"
 
 [provides]
 capabilities = ["autoruns.local"]
+
+# Optional: if a report provider is installed, a "Make Report" action appears.
+[optional.capabilities]
+"report.build" = ">=0.1"
 
 # Linux: spawns systemctl / crontab to enumerate enabled units and user cron jobs.
 [permissions]
