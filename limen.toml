@@ -11,6 +11,10 @@ repo = "CRC-BARRACUDA/limen-autoruns"
 [provides]
 capabilities = ["autoruns.local"]
 
+# Optional: if a report provider is installed, a "Make Report" action appears.
+[optional.capabilities]
+"report.build" = ">=0.1"
+
 # Linux: spawns systemctl / crontab to enumerate enabled units and user cron jobs.
 [permissions]
 subprocess = true
