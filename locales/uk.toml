@@ -1,0 +1,9 @@
+# Ukrainian card text for the module manager.
+#
+# Read by the host, not by the module: `[module] title` and `description`
+# are what the card and the tab show when the UI is in Ukrainian. English
+# falls back to `limen.toml`, so there is no en.toml beside this.
+
+[module]
+title = "Локальні автозапуски"
+description = "Показує програми, які запускаються самі на ЦЬОМУ комп'ютері — ключі Run і теки автозавантаження Windows, systemd, cron та autostart у Linux."

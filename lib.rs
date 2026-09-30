@@ -352,17 +352,44 @@ fn to_regedit(loc: &str) -> String {
 }
 
 /// The "Make Report" configuration view (opened in a tab).
+/// This machine's name, for the report's title and its filename.
+///
+/// Read from the kernel on Linux and from the environment on Windows — no new
+/// permission, and no process spawned for a string the system already has.
+/// Empty rather than a guess if neither answers: a report labelled "unknown" is
+/// one somebody has to open to identify.
+fn hostname() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(name) = std::fs::read_to_string("/proc/sys/kernel/hostname") {
+            let name = name.trim();
+            if !name.is_empty() {
+                return name.to_string();
+            }
+        }
+    }
+    for var in ["COMPUTERNAME", "HOSTNAME"] {
+        if let Ok(name) = std::env::var(var) {
+            if !name.trim().is_empty() {
+                return name.trim().to_string();
+            }
+        }
+    }
+    String::new()
+}
+
 fn report_config() -> Value {
     let opts = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     window(
         "Make Report",
         vec![
             label("Report options").strong(),
-            select("format", opts(&["In-app view", "Markdown", "HTML", "CSV"])).label("Output"),
             select("content", opts(&["Tables and charts", "Tables only", "Charts only"]))
                 .label("Include"),
             select("scope", opts(&["All entries", "Enabled only", "Disabled only"])).label("Show"),
-            button("Generate", "autoruns.local", "make_report").primary().open_in_tab(),
+            // Not `open_in_tab`: the report provider answers with a pop-up,
+            // and one opened into a tab of its own leaves that tab empty.
+            button("Generate", "autoruns.local", "make_report").primary(),
         ],
     )
 }
@@ -538,24 +565,20 @@ impl Autoruns {
 
     /// Build a report spec from the last scan and hand it to a report provider.
     fn make_report(&self, params: &Value, host: &Host) -> Value {
-        let fmt = match params.get("format").and_then(Value::as_str).unwrap_or("") {
-            "Markdown" => "markdown",
-            "HTML" => "html",
-            "CSV" => "csv",
-            _ => "view",
-        };
+        // Always the preview: which file it becomes — a PDF, a page — is
+        // chosen there, beside the thing being saved, rather than in a dropdown
+        // here that has to be kept in step with what the report module can
+        // actually produce.
+        let fmt = "view";
         let content = params.get("content").and_then(Value::as_str).unwrap_or("");
         let scope = params.get("scope").and_then(Value::as_str).unwrap_or("");
         let spec = self.report_spec(fmt, content, scope);
         match host.call("report.build", "build", spec) {
             Ok(v) if v.get("widgets").is_some() => v,
-            Ok(_) => window(
-                "Report",
-                vec![
-                    label("Report exported").strong(),
-                    label("The document was generated and opened in your default app.").weak(),
-                ],
-            ),
+            // A provider that writes a file and acknowledges with nothing.
+            // The one shipped with Limen always answers with a screen; this is
+            // for any other.
+            Ok(_) => window("Report", vec![label("Report written").strong()]),
             Err(e) => window(
                 "Report",
                 vec![
@@ -577,6 +600,7 @@ impl Autoruns {
         };
         let total = entries.len();
         let enabled = entries.iter().filter(|d| is_enabled(d)).count();
+        let host = hostname();
 
         let mut counts: HashMap<String, i64> = HashMap::new();
         for d in entries.iter().filter(|d| in_scope(d)) {
@@ -604,7 +628,19 @@ impl Autoruns {
 
         json!({
             "title": "Autoruns Report",
-            "subtitle": format!("{total} entries · {enabled} enabled"),
+            "subtitle": if host.is_empty() {
+                format!("{total} entries · {enabled} enabled")
+            } else {
+                format!("{host} · {total} entries · {enabled} enabled")
+            },
+            // Filed under the machine it is about. The report module adds the
+            // date; a folder of files all called "autoruns" is a folder nobody
+            // can find anything in.
+            "file_name": if host.is_empty() {
+                "autoruns".to_string()
+            } else {
+                format!("{host}_autoruns")
+            },
             "format": fmt,
             "summary": [
                 format!("Total entries: {total}"),
@@ -617,3 +653,98 @@ impl Autoruns {
 }
 
 export_module!(Autoruns);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An entry as the collectors emit one.
+    fn sample(name: &str, enabled: bool) -> Value {
+        entry(
+            "systemd",
+            name.to_string(),
+            "/usr/bin/thing --daemon".to_string(),
+            "/etc/systemd/system/thing.service".to_string(),
+            "system",
+            enabled,
+        )
+    }
+
+    fn scanned(entries: Vec<Value>) -> Autoruns {
+        Autoruns { last_entries: entries, scanned: true, ..Default::default() }
+    }
+
+    /// The report is filed under the machine it is about — a folder of files
+    /// all called "autoruns" is a folder nobody can find anything in. The date
+    /// is the report module's to add.
+    #[test]
+    fn the_report_is_named_after_the_machine() {
+        let spec = scanned(vec![sample("a", true)]).report_spec("view", "", "");
+        let name = spec["file_name"].as_str().unwrap();
+        assert!(name.ends_with("autoruns"), "{name}");
+        assert!(!name.contains("20"), "{name} dated itself");
+        assert!(!name.starts_with('_'), "{name} has a dangling separator");
+        // On this machine there is a hostname, and it is in both.
+        let host = hostname();
+        if !host.is_empty() {
+            assert!(name.starts_with(&host), "{name} is not filed under {host}");
+            assert!(spec["subtitle"].as_str().unwrap().starts_with(&host));
+        }
+    }
+
+    /// A machine that will not give up its name still produces a report, and
+    /// one whose subtitle does not start with a separator.
+    #[test]
+    fn a_nameless_machine_still_reports() {
+        // `hostname()` is read from the system, so the empty case is exercised
+        // through the same formatting the spec uses.
+        let (host, total, enabled) = (String::new(), 3usize, 2usize);
+        let subtitle = if host.is_empty() {
+            format!("{total} entries · {enabled} enabled")
+        } else {
+            format!("{host} · {total} entries · {enabled} enabled")
+        };
+        assert_eq!(subtitle, "3 entries · 2 enabled");
+    }
+
+    /// The scope the dialog offers is the scope the report carries.
+    #[test]
+    fn the_scope_narrows_what_is_reported() {
+        let m = scanned(vec![sample("on", true), sample("off", false), sample("on2", true)]);
+        let rows = |scope: &str| -> usize {
+            m.report_spec("view", "", scope)["sections"][0]["rows"]
+                .as_array()
+                .map_or(0, Vec::len)
+        };
+        assert_eq!(rows(""), 3, "all of them");
+        assert_eq!(rows("Enabled only"), 2);
+        assert_eq!(rows("Disabled only"), 1);
+    }
+
+    /// What goes in is still the caller's choice; what comes out is the report
+    /// module's. This one always asks for the preview.
+    #[test]
+    fn the_content_choice_still_works_and_the_format_is_the_preview() {
+        let m = scanned(vec![sample("a", true)]);
+        let both = m.report_spec("view", "Tables and charts", "");
+        assert_eq!(both["format"], "view");
+        assert!(!both["charts"].as_array().unwrap().is_empty());
+        assert!(!both["sections"].as_array().unwrap().is_empty());
+
+        let tables = m.report_spec("view", "Tables only", "");
+        assert!(tables["charts"].as_array().unwrap().is_empty());
+        let charts = m.report_spec("view", "Charts only", "");
+        assert!(charts["sections"].as_array().unwrap().is_empty());
+    }
+
+    /// The dialog offers nothing the module no longer honours.
+    #[test]
+    fn the_dialog_asks_only_what_it_uses() {
+        let json = report_config().to_string();
+        assert!(!json.contains("\"format\""), "the format is the report module's: {json}");
+        assert!(json.contains("\"content\""));
+        assert!(json.contains("\"scope\""));
+        // A pop-up opened into a tab of its own leaves that tab empty.
+        assert!(!json.contains("open_in_tab"), "{json}");
+    }
+}
