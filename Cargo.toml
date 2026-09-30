@@ -15,6 +15,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 limen-sdk-rust = { git = "https://github.com/CRC-BARRACUDA/Limen.git" }
+# For `NoConsole`: the signature check shells out to PowerShell, and a console
+# window must not flash up on every scan in a release GUI build.
+limen-proto = { git = "https://github.com/CRC-BARRACUDA/Limen.git" }
 
 # Windows-only: read the registry Run/RunOnce keys.
 [target.'cfg(windows)'.dependencies]

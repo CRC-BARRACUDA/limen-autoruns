@@ -14,7 +14,7 @@
 //! "Open in Registry" / "Open location" actions can navigate straight to it.
 //! Some system-wide keys need elevation; inaccessible ones are simply skipped.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use limen_sdk_rust::{json, Value};
 use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
@@ -25,6 +25,15 @@ use crate::entry;
 
 pub fn list_autoruns() -> Value {
     let mut entries: Vec<Value> = Vec::new();
+    // The scheduled tasks come from the Task Scheduler through a PowerShell
+    // process — most of a second of waiting, and none of it ours. It runs while
+    // this thread reads the registry, which needs nothing from it.
+    let tasks = std::thread::spawn(|| {
+        let mut out = Vec::new();
+        collect_scheduled_tasks(&mut out);
+        out
+    });
+
     collect_run_keys(&mut entries);
     collect_winlogon(&mut entries);
     collect_windows_load_run(&mut entries);
@@ -32,8 +41,16 @@ pub fn list_autoruns() -> Value {
     collect_active_setup(&mut entries);
     collect_image_hijacks(&mut entries);
     collect_services(&mut entries);
-    collect_scheduled_tasks(&mut entries);
     collect_startup_folders(&mut entries);
+    // Everything that names a library rather than a program — shell
+    // extensions, codecs, LSA packages, Office add-ins. See `asep`.
+    crate::asep::collect(&mut entries);
+
+    // A collector that panicked costs its own entries and nothing else: the
+    // scan is still worth showing without the scheduled tasks in it.
+    if let Ok(t) = tasks.join() {
+        entries.extend(t);
+    }
 
     // These are all active autostart points (the enabled/disabled state stored
     // in StartupApproved isn't read here), so `enabled` == the total.
@@ -55,7 +72,7 @@ pub fn list_autoruns() -> Value {
 // Registry helpers
 // --------------------------------------------------------------------------- //
 
-fn hive_name(hive: HKEY) -> &'static str {
+pub(crate) fn hive_name(hive: HKEY) -> &'static str {
     if hive == HKEY_LOCAL_MACHINE {
         "HKLM"
     } else {
@@ -270,53 +287,74 @@ fn collect_services(out: &mut Vec<Value>) {
 // Scheduled tasks — the XML under %SystemRoot%\System32\Tasks
 // --------------------------------------------------------------------------- //
 
+/// Scheduled tasks, asked of the Task Scheduler rather than read off disk.
+///
+/// The task definitions live in `%SystemRoot%\System32\Tasks`, and that folder
+/// is **not readable without administrator** — `read_dir` fails outright, and a
+/// collector that walks it reports no scheduled tasks at all on an ordinary
+/// account. Not "some", none: a silent nothing that reads as a machine with
+/// nothing scheduled on it, which is never true.
+///
+/// The scheduler's own API has no such requirement — 193 tasks on the machine
+/// this was found on — so it is asked instead. One process for all of them,
+/// printing `task|name|state|command` a line, the command last so one
+/// containing `|` cannot be read as a field break.
 fn collect_scheduled_tasks(out: &mut Vec<Value>) {
-    let Some(root) = std::env::var("SystemRoot").ok() else {
-        return;
-    };
-    let base = PathBuf::from(&root).join(r"System32\Tasks");
-    walk_tasks(&base, &base, out);
-}
+    use limen_proto::NoConsole;
 
-/// Recursively list task definition files, using the path under `Tasks\` as the
-/// (folder-qualified) task name, and pulling the first `<Command>` for context.
-fn walk_tasks(base: &Path, dir: &Path, out: &mut Vec<Value>) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+    let shell = format!(r"{root}\System32\WindowsPowerShell\v1.0\powershell.exe");
+    // The command is expanded here rather than later: a task's `Execute` is
+    // written with the environment variables of whoever registered it
+    // (`%localappdata%\…\OneDriveStandaloneUpdater.exe`), and an unexpanded one
+    // resolves to no file — so it would be listed with nothing to verify.
+    // A raw string: the script is full of backslashes that belong to PowerShell
+    // — its regexes and its paths — and Rust would read them as its own escapes.
+    let script = r"
+$ErrorActionPreference='SilentlyContinue'
+$clean = { param($s) (([string]$s) -replace '[\r\n\|]', ' ').Trim() }
+foreach ($t in Get-ScheduledTask) {
+  $a = $t.Actions | Where-Object { $_.Execute } | Select-Object -First 1
+  if (-not $a) { continue }
+  $cmd = [Environment]::ExpandEnvironmentVariables([string]$a.Execute)
+  if ($a.Arguments) {
+    $cmd = $cmd + ' ' + [Environment]::ExpandEnvironmentVariables([string]$a.Arguments)
+  }
+  Write-Output ('task|' + (& $clean ($t.TaskPath + $t.TaskName)) + '|' +
+                (& $clean $t.State) + '|' + (& $clean $cmd))
+}";
+    let Ok(run) = std::process::Command::new(shell)
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .no_console()
+        .output()
+    else {
         return;
     };
-    for f in rd.flatten() {
-        let path = f.path();
-        if path.is_dir() {
-            walk_tasks(base, &path, out);
+
+    for line in String::from_utf8_lossy(&run.stdout).lines() {
+        let parts: Vec<&str> = line.trim_end().splitn(4, '|').collect();
+        if parts.len() < 4 || parts[0] != "task" {
             continue;
         }
-        let name = path
-            .strip_prefix(base)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        let command = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|xml| between(&xml, "<Command>", "</Command>"))
-            .unwrap_or_default();
+        let (name, state, command) = (parts[1], parts[2], parts[3]);
+        if name.is_empty() || command.is_empty() {
+            continue;
+        }
         out.push(entry(
             "scheduled-task",
-            name,
-            command,
-            path.to_string_lossy().to_string(),
+            name.to_string(),
+            command.to_string(),
+            // The task's own path in the scheduler, which is where a person
+            // would go to find it — not a file, so no "open" action is offered.
+            name.to_string(),
             "system",
-            true,
+            // A disabled task is still an autorun worth seeing: it is one
+            // switch away from running, and something disabled it.
+            !state.eq_ignore_ascii_case("Disabled"),
         ));
     }
 }
 
-/// The text between the first `open` and the following `close` marker, trimmed.
-fn between(s: &str, open: &str, close: &str) -> Option<String> {
-    let start = s.find(open)? + open.len();
-    let end = s[start..].find(close)? + start;
-    let text = s[start..end].trim();
-    (!text.is_empty()).then(|| text.to_string())
-}
 
 // --------------------------------------------------------------------------- //
 // Startup folders

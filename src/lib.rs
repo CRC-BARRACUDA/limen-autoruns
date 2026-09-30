@@ -23,9 +23,14 @@
 pub(crate) use std::collections::HashMap;
 
 pub(crate) use limen_sdk_rust::ui::{
-    button, label, menu_item, row, select, separator, table, text, window, MenuItem,
+    button, checkbox, label, menu_item, row, select, separator, table, text, window,
+    window_modal_sized, MenuItem,
 };
 pub(crate) use limen_sdk_rust::{export_module, json, rpc, Catalog, Handler, Host, RpcError, Value};
+
+/// The capability this module provides. Named once: it is also the target every
+/// button on every screen calls back into.
+pub(crate) const CAP: &str = "autoruns.local";
 
 /// Every word this module shows, in each language it has.
 ///
@@ -62,9 +67,16 @@ mod windows;
 #[cfg(target_os = "windows")]
 use windows::list_autoruns;
 
+#[cfg(target_os = "windows")]
+mod asep;
+
 mod entry;
+mod family;
+mod filter;
 mod handler;
 mod report;
+mod scan;
+mod signature;
 mod view;
 
 #[cfg(test)]
@@ -74,8 +86,10 @@ mod tests;
 // everything, rather than every file carrying a list of its neighbours that
 // has to be maintained by hand.
 pub(crate) use entry::*;
+pub(crate) use family::*;
 pub(crate) use handler::*;
 pub(crate) use report::*;
+pub(crate) use scan::*;
 pub(crate) use view::*;
 
 /// Fallback for platforms without a collector.

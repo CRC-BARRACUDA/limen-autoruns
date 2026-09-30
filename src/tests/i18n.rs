@@ -1,7 +1,5 @@
 //! That every string the code asks for exists, in both languages.
 
-
-use super::tests::{sample, scanned};
 use super::*;
 
 /// Every `a.b` key a locale file defines, read from the file rather than
@@ -51,13 +49,11 @@ fn the_screens_are_translated_not_merely_titled() {
     assert!(uk.contains("Автозапуски"), "{uk}");
     assert!(uk.contains("Сканувати"), "{uk}");
     assert!(!uk.contains("Scan this machine"), "English survived: {uk}");
-
     let cfg = report_config("uk").to_string();
     for word in ["Параметри звіту", "Лише таблиці", "Лише увімкнені", "Створити"] {
         assert!(cfg.contains(word), "{word} is missing from {cfg}");
     }
     assert!(!cfg.contains("Tables only"), "English survived: {cfg}");
-
     let entry = json!({ "source": "cron", "name": "n", "command": "c",
                         "location": "/etc/crontab", "scope": "user", "enabled": true });
     let mut m = Autoruns::default();
@@ -74,7 +70,6 @@ fn a_choice_is_understood_in_the_language_it_was_made_in() {
     assert!(chose("Лише увімкнені", "report.scope_enabled"));
     assert!(chose("Enabled only", "report.scope_enabled"));
     assert!(!chose("Лише вимкнені", "report.scope_enabled"));
-
     let m = scanned(vec![sample("on", true), sample("off", false)]);
     for answer in ["Лише увімкнені", "Enabled only"] {
         let rows = m.report_spec("view", "", answer, "uk")["sections"][0]["rows"]

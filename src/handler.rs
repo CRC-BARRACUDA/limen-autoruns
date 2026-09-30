@@ -7,14 +7,23 @@ pub(crate) struct Autoruns {
     /// Whether the user has scanned this session. Once true, reopening the tab
     /// shows the saved results instead of the landing Scan button.
     pub(crate) scanned: bool,
-    /// The raw search text from the last scan (restored into the search box).
-    pub(crate) last_query: String,
+    /// What the user chose to look at. Applied to the scan already in hand —
+    /// nothing here causes the machine to be read again.
+    pub(crate) filter: filter::Filter,
     /// The full entry list from the last scan, so the view can be re-rendered on
     /// reopen without re-enumerating the machine.
     pub(crate) last_entries: Vec<Value>,
     /// The last scan, keyed by the row id sent back on a row action, so `about`
     /// / `open_location` can resolve which entry the user acted on.
     pub(crate) last: HashMap<String, Value>,
+    /// Which page of the current category is on screen, counted from zero.
+    pub(crate) page: usize,
+    /// Which category is on screen. Empty means all of them at once.
+    ///
+    /// One at a time by default, because all of them is four hundred rows and
+    /// ten tables: a page nobody can scroll through to find anything, which is
+    /// why Sysinternals Autoruns puts a tab on each and shows one.
+    pub(crate) family: String,
 }
 
 impl Handler for Autoruns {
@@ -39,13 +48,72 @@ impl Handler for Autoruns {
             // session, otherwise just a Scan button (no enumeration on open).
             "ui" => Ok(if self.scanned {
                 let entries = self.last_entries.clone();
-                let query = self.last_query.clone();
-                self.render(&entries, &query, report, lang)
+                self.render(&entries, report, lang)
             } else {
                 idle_view(lang)
             }),
             // Scan now (enumerate), save the state, and render (also Refresh).
-            "scan" => Ok(self.scan(&params, report, lang)),
+            "scan" => Ok(self.scan(report, lang)),
+            // Turn to a page, without re-enumerating the machine.
+            "page" => {
+                self.page = params.get("page").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let entries = self.last_entries.clone();
+                Ok(self.render(&entries, report, lang))
+            }
+            // Show one category, without re-enumerating the machine.
+            "family" => {
+                // A different category starts at its own beginning: page four
+                // of the last one means nothing here.
+                self.page = 0;
+                self.family = params
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let entries = self.last_entries.clone();
+                Ok(self.render(&entries, report, lang))
+            }
+            // The filter window, and what it does. None of these re-read the
+            // machine: they narrow the scan already in hand.
+            "filter" => Ok(self.filter_modal(lang)),
+            "filter_apply" => {
+                let offered = filter::Filter::states_offered(&self.last_entries);
+                self.filter = filter::from_inputs(&params, &offered);
+                // A narrower list is a shorter one: page four of the old result
+                // may not exist any more.
+                self.page = 0;
+                let entries = self.last_entries.clone();
+                Ok(self.render(&entries, report, lang))
+            }
+            "filter_clear" => {
+                self.filter = filter::Filter::default();
+                self.page = 0;
+                let entries = self.last_entries.clone();
+                Ok(self.render(&entries, report, lang))
+            }
+            // Add and remove work on what is on screen, so a term typed into
+            // the empty field is not lost by pressing Add.
+            "filter_add" => {
+                self.add_term(&params);
+                Ok(self.filter_modal(lang))
+            }
+            // A field was typed in. Nothing to do but take what the window now
+            // holds and draw it again — which is how Add learns whether the
+            // last field has anything in it.
+            "filter_touch" => {
+                let offered = filter::Filter::states_offered(&self.last_entries);
+                self.filter = filter::from_inputs(&params, &offered);
+                Ok(self.filter_modal(lang))
+            }
+            "filter_remove" => {
+                let offered = filter::Filter::states_offered(&self.last_entries);
+                self.filter = filter::from_inputs(&params, &offered);
+                let i = params.get("i").and_then(Value::as_u64).unwrap_or(0) as usize;
+                if i < self.filter.terms.len() {
+                    self.filter.terms.remove(i);
+                }
+                Ok(self.filter_modal(lang))
+            }
             "list" => Ok(list_autoruns()),
             // Row actions: open an entry's details, or open where it's defined.
             "about" => Ok(self.about(&params, lang)),
@@ -68,18 +136,57 @@ impl Handler for Autoruns {
 impl Autoruns {
     /// Enumerate the machine, save the scan state (so reopening the tab restores
     /// it), and render. `params.query` filters; Refresh calls this again.
-    pub(crate) fn scan(&mut self, params: &Value, report: bool, lang: &str) -> Value {
-        let query = params.get("query").and_then(Value::as_str).unwrap_or("").to_string();
+    pub(crate) fn scan(&mut self, report: bool, lang: &str) -> Value {
+
         let data = list_autoruns();
-        let entries: Vec<Value> = data
+        let mut entries: Vec<Value> = data
             .get("entries")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
+        add_signatures(&mut entries);
+        // Open on the first category that has anything in it, rather than on
+        // all of them. Everything at once is four hundred rows and ten tables —
+        // a page to scroll through, not one to read — and it is one click away.
+        self.family = FAMILIES
+            .iter()
+            .map(|(k, _)| *k)
+            .chain(["family.other"])
+            .find(|k| {
+                entries
+                    .iter()
+                    .any(|d| family_of(d).unwrap_or("family.other") == *k)
+            })
+            .unwrap_or_default()
+            .to_string();
         self.scanned = true;
         self.last_entries = entries.clone();
-        self.last_query = query.clone();
-        self.render(&entries, &query, report, lang)
+        self.render(&entries, report, lang)
+    }
+
+    /// Take what the window holds, and give it one more field to type into.
+    ///
+    /// Nothing is added while the last field is still blank: that field *is*
+    /// the next word, and another beside it would only be a second empty box.
+    pub(crate) fn add_term(&mut self, params: &Value) {
+        let offered = filter::Filter::states_offered(&self.last_entries);
+        self.filter = filter::from_inputs(params, &offered);
+        let room = self.filter.terms.len() < filter::MAX_TERMS;
+        let blank = self
+            .filter
+            .terms
+            .last()
+            .map(|t| t.trim().is_empty())
+            .unwrap_or(true);
+        if room && !blank {
+            self.filter.terms.push(String::new());
+        }
+    }
+
+    /// The filter window, built from what the scan actually produced.
+    pub(crate) fn filter_modal(&self, lang: &str) -> Value {
+        let offered = filter::Filter::states_offered(&self.last_entries);
+        filter::filter_modal(lang, &self.filter, &offered)
     }
 
     /// Open where an entry is defined: the registry key (Windows Run/RunOnce),

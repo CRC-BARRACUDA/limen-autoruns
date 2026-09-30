@@ -60,7 +60,7 @@ pub(crate) fn report_config(lang: &str) -> Value {
             .label(t("report.show")),
             // Not `open_in_tab`: the report provider answers with a pop-up,
             // and one opened into a tab of its own leaves that tab empty.
-            button(t("report.generate"), "autoruns.local", "make_report").primary(),
+            button(t("report.generate"), CAP, "make_report").primary(),
         ],
     )
 }
@@ -99,7 +99,17 @@ impl Autoruns {
     /// last scan, honoring the config choices.
     pub(crate) fn report_spec(&self, fmt: &str, content: &str, scope: &str, lang: &str) -> Value {
         let t = |k: &str| catalog().tr(lang, k);
-        let entries = &self.last_entries;
+        // The report is of what the user is looking at. With no filter that is
+        // everything; with one, it is what the filter left — a report that
+        // quietly widened back out to the whole machine would not be the thing
+        // the person asked for, and they would have no way to tell.
+        let entries: Vec<Value> = self
+            .last_entries
+            .iter()
+            .filter(|d| self.filter.matches(d, &row_cells(d, lang)))
+            .cloned()
+            .collect();
+        let entries = &entries;
         let in_scope = |d: &Value| {
             if chose(scope, "report.scope_enabled") {
                 is_enabled(d)

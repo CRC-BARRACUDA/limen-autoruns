@@ -33,17 +33,6 @@ pub(crate) fn entry(
     })
 }
 
-/// The six visible columns, as catalogue keys — named once, so the table and
-/// the report cannot drift apart.
-pub(crate) const COLUMNS: [&str; 6] = [
-    "col.source",
-    "col.name",
-    "col.command",
-    "col.scope",
-    "col.enabled",
-    "col.location",
-];
-
 /// A cell value (empty string if the field is missing).
 pub(crate) fn cell(d: &Value, key: &str) -> String {
     d.get(key).and_then(Value::as_str).unwrap_or("").to_string()
@@ -60,10 +49,36 @@ pub(crate) fn row_cells(d: &Value, lang: &str) -> Vec<String> {
         cell(d, "source"),
         cell(d, "name"),
         cell(d, "command"),
+        // In words as well as in colour. Somebody reading in greyscale, or not
+        // telling red from grey, gets the whole finding from the column; the
+        // colour is only how the eye finds the row in three hundred.
+        signature_label(d, lang),
         cell(d, "scope"),
         catalog().tr(lang, if is_enabled(d) { "val.yes" } else { "val.no" }),
         cell(d, "location"),
     ]
+}
+
+/// What the publisher column says: who signed the program, and whether that
+/// signature holds — `(Verified) Microsoft Corporation`.
+///
+/// Empty when there was nothing to check: an entry naming no file that
+/// resolves, or a platform with no Authenticode. A dash would claim a check
+/// happened and found nothing to say.
+pub(crate) fn signature_label(d: &Value, lang: &str) -> String {
+    let t = |k: &str| catalog().tr(lang, k);
+    let status = cell(d, "signature");
+    // Nothing was signed because nothing is there: say that instead, since it
+    // is the more useful fact and "not verified" would imply a file to verify.
+    if status == signature::MISSING {
+        return t("sig.missing");
+    }
+    signature::Signed {
+        status,
+        signer: cell(d, "signer"),
+        kind: cell(d, "sig_kind"),
+    }
+    .publisher(&t("sig.verified"), &t("sig.not_verified"), &t("sig.not_checked"))
 }
 
 /// How to open an entry, decided from its actual `location`:
@@ -220,18 +235,18 @@ pub(crate) fn is_text_file(path: &str) -> bool {
 /// show the stored value itself, which is the whole definition for a Run key.
 pub(crate) fn row_menu_for(d: &Value, lang: &str) -> Vec<MenuItem> {
     let t = |k: &str| catalog().tr(lang, k);
-    let mut items = vec![menu_item(t("menu.about"), "autoruns.local", "about").open_in_tab()];
+    let mut items = vec![menu_item(t("menu.about"), CAP, "about").open_in_tab()];
     if let Some((key, _, _)) = open_kind(d) {
-        items.push(menu_item(t(key), "autoruns.local", "open_location"));
+        items.push(menu_item(t(key), CAP, "open_location"));
     }
     if let Some(path) = target_file(d) {
-        items.push(menu_item(t("menu.reveal"), "autoruns.local", "reveal_file"));
+        items.push(menu_item(t("menu.reveal"), CAP, "reveal_file"));
         if is_text_file(&path) {
-            items.push(menu_item(t("menu.edit"), "autoruns.local", "edit_file"));
+            items.push(menu_item(t("menu.edit"), CAP, "edit_file"));
         }
     }
     if is_registry_location(&cell(d, "location")) {
-        items.push(menu_item(t("menu.show_value"), "autoruns.local", "show_value"));
+        items.push(menu_item(t("menu.show_value"), CAP, "show_value"));
     }
     items
 }
