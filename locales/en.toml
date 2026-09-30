@@ -1,0 +1,68 @@
+# Every word this module puts on screen. The module card's own title and
+# description are not here — the host reads those from limen.toml for English.
+
+[ui]
+title = "Autoruns"
+idle_hint = "Scan this machine for programs configured to start automatically."
+scan = "Scan"
+refresh = "Refresh"
+search = "Search"
+search_ph = "source, name, command, location…"
+rows_hint = "Right-click a row for actions; double-click to open its details."
+count = "Autostart entries ({n})"
+report = "Make Report"
+
+[col]
+source = "Source"
+name = "Name"
+command = "Command"
+scope = "Scope"
+enabled = "Enabled"
+location = "Location"
+
+[val]
+yes = "yes"
+no = "no"
+
+[menu]
+about = "About"
+open_registry = "Open in Registry"
+open_path = "Open path"
+open_script = "Open script"
+reveal = "Show in Explorer"
+edit = "Open in Notepad"
+show_value = "Show value in Notepad"
+
+[detail]
+title = "Autorun"
+missing = "This entry isn't in the latest scan — re-scan and try again."
+
+[report]
+config_title = "Make Report"
+options = "Report options"
+include = "Include"
+show = "Show"
+generate = "Generate"
+content_both = "Tables and charts"
+content_tables = "Tables only"
+content_charts = "Charts only"
+scope_all = "All entries"
+scope_enabled = "Enabled only"
+scope_disabled = "Disabled only"
+title = "Autoruns Report"
+chart = "Entries by source"
+section = "Autostart entries"
+total = "Total entries: {n}"
+enabled = "Enabled: {n}"
+subtitle = "{total} entries · {enabled} enabled"
+subtitle_host = "{host} · {total} entries · {enabled} enabled"
+written = "Report written"
+failed = "Couldn't build the report"
+
+# The registry value, written to a file and opened as text: for a Run key the
+# value *is* the whole autorun, so there is no script to read.
+[value]
+key = "Key"
+name = "Value"
+source = "Source"
+scope = "Scope"

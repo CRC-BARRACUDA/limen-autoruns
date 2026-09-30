@@ -1,9 +1,73 @@
-# Ukrainian card text for the module manager.
-#
-# Read by the host, not by the module: `[module] title` and `description`
-# are what the card and the tab show when the UI is in Ukrainian. English
-# falls back to `limen.toml`, so there is no en.toml beside this.
+# Українська. Перший блок читає хост, а не модуль: [module] title та
+# description — це те, що показує картка модуля та вкладка. Для англійської
+# такого блоку немає: хост бере її з limen.toml.
 
 [module]
 title = "Локальні автозапуски"
 description = "Показує програми, які запускаються самі на ЦЬОМУ комп'ютері — ключі Run і теки автозавантаження Windows, systemd, cron та autostart у Linux."
+
+[ui]
+title = "Автозапуски"
+idle_hint = "Перевірити цей комп'ютер на програми, налаштовані запускатися самостійно."
+scan = "Сканувати"
+refresh = "Оновити"
+search = "Пошук"
+search_ph = "джерело, назва, команда, розташування…"
+rows_hint = "Правий клік по рядку — дії; подвійний клік — подробиці."
+count = "Записів автозапуску ({n})"
+report = "Створити звіт"
+
+[col]
+source = "Джерело"
+name = "Назва"
+command = "Команда"
+scope = "Область"
+enabled = "Увімкнено"
+location = "Розташування"
+
+[val]
+yes = "так"
+no = "ні"
+
+[menu]
+about = "Подробиці"
+open_registry = "Відкрити в реєстрі"
+open_path = "Відкрити теку"
+open_script = "Відкрити скрипт"
+reveal = "Показати у провіднику"
+edit = "Відкрити в редакторі"
+show_value = "Показати значення в редакторі"
+
+[detail]
+title = "Автозапуск"
+missing = "Цього запису немає в останньому скануванні — проскануйте ще раз."
+
+[report]
+config_title = "Створити звіт"
+options = "Параметри звіту"
+include = "Включити"
+show = "Показати"
+generate = "Створити"
+content_both = "Таблиці та діаграми"
+content_tables = "Лише таблиці"
+content_charts = "Лише діаграми"
+scope_all = "Усі записи"
+scope_enabled = "Лише увімкнені"
+scope_disabled = "Лише вимкнені"
+title = "Звіт про автозапуски"
+chart = "Записи за джерелом"
+section = "Записи автозапуску"
+total = "Усього записів: {n}"
+enabled = "Увімкнено: {n}"
+subtitle = "записів: {total} · увімкнено: {enabled}"
+subtitle_host = "{host} · записів: {total} · увімкнено: {enabled}"
+written = "Звіт записано"
+failed = "Не вдалося створити звіт"
+
+# Значення з реєстру, записане у файл і відкрите як текст: для ключа Run саме
+# значення і є автозапуском, іншого скрипта для читання немає.
+[value]
+key = "Ключ"
+name = "Значення"
+source = "Джерело"
+scope = "Область"

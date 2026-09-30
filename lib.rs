@@ -25,7 +25,32 @@ use std::collections::HashMap;
 use limen_sdk_rust::ui::{
     button, label, menu_item, row, select, separator, table, text, window, MenuItem,
 };
-use limen_sdk_rust::{export_module, json, rpc, Handler, Host, RpcError, Value};
+use limen_sdk_rust::{export_module, json, rpc, Catalog, Handler, Host, RpcError, Value};
+
+/// Every word this module shows, in each language it has.
+///
+/// English lives in a file beside the Ukrainian rather than in the code: two
+/// catalogues that can be read side by side are two catalogues somebody can
+/// check, and a string left behind in the source is a string nobody translates.
+fn catalog() -> &'static Catalog {
+    static C: std::sync::OnceLock<Catalog> = std::sync::OnceLock::new();
+    C.get_or_init(|| {
+        Catalog::new(&[
+            ("en", include_str!("locales/en.toml")),
+            ("uk", include_str!("locales/uk.toml")),
+        ])
+    })
+}
+
+/// Whether a dropdown's answer is this choice, in whichever language it was
+/// shown in.
+///
+/// An option is its own value — a person reading Ukrainian sends Ukrainian
+/// back — so the answer is compared against every language rather than against
+/// the English it used to be.
+fn chose(answer: &str, key: &str) -> bool {
+    ["en", "uk"].iter().any(|lang| catalog().tr(lang, key) == answer)
+}
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -80,29 +105,31 @@ impl Handler for Autoruns {
         // Optional integration: only offer "Make Report" when a report provider
         // is actually loaded (discovered at call time, never a hard dependency).
         let report = host.has_capability("report.build");
+        let lang = host.locale();
+        let lang = lang.as_str();
         match method {
             // Landing view: the saved results if the user has scanned this
             // session, otherwise just a Scan button (no enumeration on open).
             "ui" => Ok(if self.scanned {
                 let entries = self.last_entries.clone();
                 let query = self.last_query.clone();
-                self.render(&entries, &query, report)
+                self.render(&entries, &query, report, lang)
             } else {
-                idle_view()
+                idle_view(lang)
             }),
             // Scan now (enumerate), save the state, and render (also Refresh).
-            "scan" => Ok(self.scan(&params, report)),
+            "scan" => Ok(self.scan(&params, report, lang)),
             "list" => Ok(list_autoruns()),
             // Row actions: open an entry's details, or open where it's defined.
-            "about" => Ok(self.about(&params)),
+            "about" => Ok(self.about(&params, lang)),
             "open_location" => Ok(self.open_location(&params, host)),
             // Act on the program the entry runs, rather than where it's declared.
             "reveal_file" => Ok(self.with_target(&params, |path| host.open("reveal", path))),
             "edit_file" => Ok(self.with_target(&params, |path| host.open("edit", path))),
-            "show_value" => Ok(self.show_value(&params, host)),
+            "show_value" => Ok(self.show_value(&params, host, lang)),
             // Report integration (present only while a report provider is loaded).
-            "report_config" => Ok(report_config()),
-            "make_report" => Ok(self.make_report(&params, host)),
+            "report_config" => Ok(report_config(lang)),
+            "make_report" => Ok(self.make_report(&params, host, lang)),
             other => Err(RpcError::new(
                 rpc::METHOD_NOT_FOUND,
                 format!("autoruns has no method {other}"),
@@ -139,15 +166,27 @@ pub(crate) fn entry(
 
 /// The landing view: nothing is scanned until the user asks. Just a hint and a
 /// Scan button that invokes `scan`.
-fn idle_view() -> Value {
+fn idle_view(lang: &str) -> Value {
+    let t = |k: &str| catalog().tr(lang, k);
     window(
-        "Autoruns",
+        t("ui.title"),
         vec![
-            label("Scan this machine for programs configured to start automatically.").weak(),
-            button("Scan", "autoruns.local", "scan").primary(),
+            label(t("ui.idle_hint")).weak(),
+            button(t("ui.scan"), "autoruns.local", "scan").primary(),
         ],
     )
 }
+
+/// The six visible columns, as catalogue keys — named once, so the table and
+/// the report cannot drift apart.
+const COLUMNS: [&str; 6] = [
+    "col.source",
+    "col.name",
+    "col.command",
+    "col.scope",
+    "col.enabled",
+    "col.location",
+];
 
 /// A cell value (empty string if the field is missing).
 fn cell(d: &Value, key: &str) -> String {
@@ -160,32 +199,32 @@ fn is_enabled(d: &Value) -> bool {
 }
 
 /// The six visible columns for an entry row.
-fn row_cells(d: &Value) -> Vec<String> {
+fn row_cells(d: &Value, lang: &str) -> Vec<String> {
     vec![
         cell(d, "source"),
         cell(d, "name"),
         cell(d, "command"),
         cell(d, "scope"),
-        if is_enabled(d) { "yes".into() } else { "no".into() },
+        catalog().tr(lang, if is_enabled(d) { "val.yes" } else { "val.no" }),
         cell(d, "location"),
     ]
 }
 
 /// How to open an entry, decided from its actual `location`:
-/// `(menu/button label, host.open target, value)`. `None` when there's nothing
+/// `(the catalogue key its label comes from, host.open target, value)`. `None` when there's nothing
 /// to open — a systemd unit is *named*, not a path, and some locations are
 /// labels or missing files, so those rows simply get no open action.
 fn open_kind(d: &Value) -> Option<(&'static str, &'static str, String)> {
     let location = cell(d, "location");
     // A registry location (any Windows ASEP source) opens in regedit.
     if is_registry_location(&location) {
-        return Some(("Open in Registry", "registry", to_regedit(&location)));
+        return Some(("menu.open_registry", "registry", to_regedit(&location)));
     }
     let p = std::path::Path::new(&location);
     if p.is_dir() {
-        Some(("Open path", "path", location)) // a folder → file manager
+        Some(("menu.open_path", "path", location)) // a folder → file manager
     } else if p.is_file() {
-        Some(("Open script", "path", location)) // a script / .desktop / crontab file
+        Some(("menu.open_script", "path", location)) // a script / .desktop / crontab file
     } else {
         None // systemd unit, or a path that doesn't exist
     }
@@ -323,19 +362,20 @@ fn is_text_file(path: &str) -> bool {
 /// is openable, and — when the command resolves to a real file — actions to
 /// reveal it in the file manager and read it. Registry-defined entries can also
 /// show the stored value itself, which is the whole definition for a Run key.
-fn row_menu_for(d: &Value) -> Vec<MenuItem> {
-    let mut items = vec![menu_item("About", "autoruns.local", "about").open_in_tab()];
-    if let Some((label, _, _)) = open_kind(d) {
-        items.push(menu_item(label, "autoruns.local", "open_location"));
+fn row_menu_for(d: &Value, lang: &str) -> Vec<MenuItem> {
+    let t = |k: &str| catalog().tr(lang, k);
+    let mut items = vec![menu_item(t("menu.about"), "autoruns.local", "about").open_in_tab()];
+    if let Some((key, _, _)) = open_kind(d) {
+        items.push(menu_item(t(key), "autoruns.local", "open_location"));
     }
     if let Some(path) = target_file(d) {
-        items.push(menu_item("Show in Explorer", "autoruns.local", "reveal_file"));
+        items.push(menu_item(t("menu.reveal"), "autoruns.local", "reveal_file"));
         if is_text_file(&path) {
-            items.push(menu_item("Open in Notepad", "autoruns.local", "edit_file"));
+            items.push(menu_item(t("menu.edit"), "autoruns.local", "edit_file"));
         }
     }
     if is_registry_location(&cell(d, "location")) {
-        items.push(menu_item("Show value in Notepad", "autoruns.local", "show_value"));
+        items.push(menu_item(t("menu.show_value"), "autoruns.local", "show_value"));
     }
     items
 }
@@ -378,18 +418,34 @@ fn hostname() -> String {
     String::new()
 }
 
-fn report_config() -> Value {
-    let opts = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+fn report_config(lang: &str) -> Value {
+    let t = |k: &str| catalog().tr(lang, k);
+    let opts = |keys: &[&str]| keys.iter().map(|k| t(k)).collect::<Vec<_>>();
     window(
-        "Make Report",
+        t("report.config_title"),
         vec![
-            label("Report options").strong(),
-            select("content", opts(&["Tables and charts", "Tables only", "Charts only"]))
-                .label("Include"),
-            select("scope", opts(&["All entries", "Enabled only", "Disabled only"])).label("Show"),
+            label(t("report.options")).strong(),
+            select(
+                "content",
+                opts(&[
+                    "report.content_both",
+                    "report.content_tables",
+                    "report.content_charts",
+                ]),
+            )
+            .label(t("report.include")),
+            select(
+                "scope",
+                opts(&[
+                    "report.scope_all",
+                    "report.scope_enabled",
+                    "report.scope_disabled",
+                ]),
+            )
+            .label(t("report.show")),
             // Not `open_in_tab`: the report provider answers with a pop-up,
             // and one opened into a tab of its own leaves that tab empty.
-            button("Generate", "autoruns.local", "make_report").primary(),
+            button(t("report.generate"), "autoruns.local", "make_report").primary(),
         ],
     )
 }
@@ -397,7 +453,7 @@ fn report_config() -> Value {
 impl Autoruns {
     /// Enumerate the machine, save the scan state (so reopening the tab restores
     /// it), and render. `params.query` filters; Refresh calls this again.
-    fn scan(&mut self, params: &Value, report: bool) -> Value {
+    fn scan(&mut self, params: &Value, report: bool, lang: &str) -> Value {
         let query = params.get("query").and_then(Value::as_str).unwrap_or("").to_string();
         let data = list_autoruns();
         let entries: Vec<Value> = data
@@ -408,20 +464,27 @@ impl Autoruns {
         self.scanned = true;
         self.last_entries = entries.clone();
         self.last_query = query.clone();
-        self.render(&entries, &query, report)
+        self.render(&entries, &query, report, lang)
     }
 
     /// The results view: a search box + Refresh (+ Make Report when a report
     /// provider is loaded), then one interactive table of every autostart entry.
     /// Filters `entries` by `query_raw` and caches each shown entry by its row id
     /// so row actions (`about` / `open_location`) resolve it.
-    fn render(&mut self, entries: &[Value], query_raw: &str, report: bool) -> Value {
+    fn render(
+        &mut self,
+        entries: &[Value],
+        query_raw: &str,
+        report: bool,
+        lang: &str,
+    ) -> Value {
+        let t = |k: &str| catalog().tr(lang, k);
         let query = query_raw.to_lowercase();
         let matches = |d: &Value| -> bool {
             if query.is_empty() {
                 return true;
             }
-            row_cells(d).join(" ").to_lowercase().contains(&query)
+            row_cells(d, lang).join(" ").to_lowercase().contains(&query)
         };
 
         self.last.clear();
@@ -433,31 +496,30 @@ impl Autoruns {
             let rid = i.to_string();
             self.last.insert(rid.clone(), d.clone());
             ids.push(rid);
-            rows.push(row_cells(d));
-            menus.push(row_menu_for(d)); // per-row: open action only when openable
+            rows.push(row_cells(d, lang));
+            menus.push(row_menu_for(d, lang)); // per-row: open only when openable
         }
 
-        let cols: Vec<String> = ["Source", "Name", "Command", "Scope", "Enabled", "Location"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let cols: Vec<String> = COLUMNS.iter().map(|k| t(k)).collect();
 
-        let mut actions = vec![button("Refresh", "autoruns.local", "scan").primary()];
+        let mut actions = vec![button(t("ui.refresh"), "autoruns.local", "scan").primary()];
         if report {
-            actions.push(button("Make Report", "autoruns.local", "report_config").open_in_tab());
+            actions.push(
+                button(t("ui.report"), "autoruns.local", "report_config").open_in_tab(),
+            );
         }
 
         window(
-            "Autoruns",
+            t("ui.title"),
             vec![
                 text("query")
-                    .label("Search")
-                    .placeholder("source, name, command, location…")
+                    .label(t("ui.search"))
+                    .placeholder(t("ui.search_ph"))
                     .default(query_raw.to_string()),
                 row(actions),
-                label("Right-click a row for actions; double-click to open its details.").weak(),
+                label(t("ui.rows_hint")).weak(),
                 separator(),
-                label(format!("Autostart entries ({})", rows.len())).strong(),
+                label(t("ui.count").replace("{n}", &rows.len().to_string())).strong(),
                 table(cols, rows)
                     .row_ids(ids)
                     .row_menus(menus)
@@ -467,13 +529,11 @@ impl Autoruns {
     }
 
     /// A detail view for one entry (opened in a new tab from a row action).
-    fn about(&self, params: &Value) -> Value {
+    fn about(&self, params: &Value, lang: &str) -> Value {
+        let t = |k: &str| catalog().tr(lang, k);
         let id = params.get("id").and_then(Value::as_str).unwrap_or("");
         let Some(d) = self.last.get(id) else {
-            return window(
-                "Autorun",
-                vec![label("This entry isn't in the latest scan — re-scan and try again.").weak()],
-            );
+            return window(t("detail.title"), vec![label(t("detail.missing")).weak()]);
         };
         let shown = |v: String| if v.is_empty() { "—".to_string() } else { v };
         let field = |name: &str, val: String| {
@@ -487,19 +547,22 @@ impl Autoruns {
         let mut widgets = vec![
             label(title.clone()).strong(),
             separator(),
-            field("Source", cell(d, "source")),
-            field("Name", cell(d, "name")),
-            field("Command", cell(d, "command")),
-            field("Scope", cell(d, "scope")),
-            field("Enabled", if is_enabled(d) { "yes".into() } else { "no".into() }),
-            field("Location", cell(d, "location")),
+            field(&t("col.source"), cell(d, "source")),
+            field(&t("col.name"), cell(d, "name")),
+            field(&t("col.command"), cell(d, "command")),
+            field(&t("col.scope"), cell(d, "scope")),
+            field(
+                &t("col.enabled"),
+                t(if is_enabled(d) { "val.yes" } else { "val.no" }),
+            ),
+            field(&t("col.location"), cell(d, "location")),
         ];
         // Offer the open action only where the location is actually openable,
         // labelled for what it is (script / folder / registry).
-        if let Some((label, _, _)) = open_kind(d) {
+        if let Some((key, _, _)) = open_kind(d) {
             widgets.push(separator());
             widgets.push(
-                button(label, "autoruns.local", "open_location")
+                button(t(key), "autoruns.local", "open_location")
                     .args(json!({ "id": id }))
                     .primary(),
             );
@@ -535,20 +598,28 @@ impl Autoruns {
     /// For a Run key the value *is* the whole autorun — there is no script to
     /// read — so it is written to a temp file and opened as text, alongside the
     /// key and value name it came from.
-    fn show_value(&self, params: &Value, host: &Host) -> Value {
+    fn show_value(&self, params: &Value, host: &Host, lang: &str) -> Value {
         let id = params.get("id").and_then(Value::as_str).unwrap_or("");
         let Some(d) = self.last.get(id) else {
             return Value::Null;
         };
         let name = cell(d, "name");
-        let body = format!(
-            "Key:      {}\r\nValue:    {}\r\nSource:   {}\r\nScope:    {}\r\n\r\n{}\r\n",
-            cell(d, "location"),
-            name,
-            cell(d, "source"),
-            cell(d, "scope"),
-            cell(d, "command"),
-        );
+        // Each label padded to the same width so the four values line up in a
+        // plain text editor, whatever language names them.
+        let t = |k: &str| catalog().tr(lang, k);
+        let fields = [
+            (t("value.key"), cell(d, "location")),
+            (t("value.name"), name.clone()),
+            (t("value.source"), cell(d, "source")),
+            (t("value.scope"), cell(d, "scope")),
+        ];
+        let width = fields.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
+        let mut body = String::new();
+        for (key, value) in &fields {
+            let pad = " ".repeat(width - key.chars().count());
+            body.push_str(&format!("{key}:{pad}   {value}\r\n"));
+        }
+        body.push_str(&format!("\r\n{}\r\n", cell(d, "command")));
         // Keep the entry's name in the filename so Notepad's title bar says
         // which autorun this is; sanitise it, since it comes from the registry.
         let safe: String = name
@@ -564,7 +635,7 @@ impl Autoruns {
     }
 
     /// Build a report spec from the last scan and hand it to a report provider.
-    fn make_report(&self, params: &Value, host: &Host) -> Value {
+    fn make_report(&self, params: &Value, host: &Host, lang: &str) -> Value {
         // Always the preview: which file it becomes — a PDF, a page — is
         // chosen there, beside the thing being saved, rather than in a dropdown
         // here that has to be kept in step with what the report module can
@@ -572,17 +643,20 @@ impl Autoruns {
         let fmt = "view";
         let content = params.get("content").and_then(Value::as_str).unwrap_or("");
         let scope = params.get("scope").and_then(Value::as_str).unwrap_or("");
-        let spec = self.report_spec(fmt, content, scope);
+        let spec = self.report_spec(fmt, content, scope, lang);
         match host.call("report.build", "build", spec) {
             Ok(v) if v.get("widgets").is_some() => v,
             // A provider that writes a file and acknowledges with nothing.
             // The one shipped with Limen always answers with a screen; this is
             // for any other.
-            Ok(_) => window("Report", vec![label("Report written").strong()]),
+            Ok(_) => window(
+                catalog().tr(lang, "report.config_title"),
+                vec![label(catalog().tr(lang, "report.written")).strong()],
+            ),
             Err(e) => window(
-                "Report",
+                catalog().tr(lang, "report.config_title"),
                 vec![
-                    label("Couldn't build the report").strong(),
+                    label(catalog().tr(lang, "report.failed")).strong(),
                     label(format!("{e}")).weak(),
                 ],
             ),
@@ -591,12 +665,17 @@ impl Autoruns {
 
     /// Assemble the report spec (a by-source chart + an entries table) from the
     /// last scan, honoring the config choices.
-    fn report_spec(&self, fmt: &str, content: &str, scope: &str) -> Value {
+    fn report_spec(&self, fmt: &str, content: &str, scope: &str, lang: &str) -> Value {
+        let t = |k: &str| catalog().tr(lang, k);
         let entries = &self.last_entries;
-        let in_scope = |d: &Value| match scope {
-            "Enabled only" => is_enabled(d),
-            "Disabled only" => !is_enabled(d),
-            _ => true,
+        let in_scope = |d: &Value| {
+            if chose(scope, "report.scope_enabled") {
+                is_enabled(d)
+            } else if chose(scope, "report.scope_disabled") {
+                !is_enabled(d)
+            } else {
+                true
+            }
         };
         let total = entries.len();
         let enabled = entries.iter().filter(|d| is_enabled(d)).count();
@@ -613,25 +692,30 @@ impl Autoruns {
             .map(|(k, v)| json!({ "label": k, "value": v }))
             .collect();
 
-        let cols = ["Source", "Name", "Command", "Scope", "Enabled", "Location"];
+        let cols: Vec<String> = COLUMNS.iter().map(|k| t(k)).collect();
         let rows: Vec<Vec<String>> =
-            entries.iter().filter(|d| in_scope(d)).map(row_cells).collect();
+            entries.iter().filter(|d| in_scope(d)).map(|d| row_cells(d, lang)).collect();
 
         let mut charts = Vec::new();
-        if content != "Tables only" && !chart_data.is_empty() {
-            charts.push(json!({ "title": "Entries by source", "data": chart_data }));
+        if !chose(content, "report.content_tables") && !chart_data.is_empty() {
+            charts.push(json!({ "title": t("report.chart"), "data": chart_data }));
         }
         let mut sections = Vec::new();
-        if content != "Charts only" {
-            sections.push(json!({ "heading": "Autostart entries", "columns": cols, "rows": rows }));
+        if !chose(content, "report.content_charts") {
+            sections.push(json!({ "heading": t("report.section"), "columns": cols, "rows": rows }));
         }
 
         json!({
-            "title": "Autoruns Report",
+            "title": t("report.title"),
             "subtitle": if host.is_empty() {
-                format!("{total} entries · {enabled} enabled")
+                t("report.subtitle")
+                    .replace("{total}", &total.to_string())
+                    .replace("{enabled}", &enabled.to_string())
             } else {
-                format!("{host} · {total} entries · {enabled} enabled")
+                t("report.subtitle_host")
+                    .replace("{host}", &host)
+                    .replace("{total}", &total.to_string())
+                    .replace("{enabled}", &enabled.to_string())
             },
             // Filed under the machine it is about. The report module adds the
             // date; a folder of files all called "autoruns" is a folder nobody
@@ -643,8 +727,8 @@ impl Autoruns {
             },
             "format": fmt,
             "summary": [
-                format!("Total entries: {total}"),
-                format!("Enabled: {enabled}"),
+                t("report.total").replace("{n}", &total.to_string()),
+                t("report.enabled").replace("{n}", &enabled.to_string()),
             ],
             "charts": charts,
             "sections": sections,
@@ -659,7 +743,7 @@ mod tests {
     use super::*;
 
     /// An entry as the collectors emit one.
-    fn sample(name: &str, enabled: bool) -> Value {
+    pub(super) fn sample(name: &str, enabled: bool) -> Value {
         entry(
             "systemd",
             name.to_string(),
@@ -670,7 +754,7 @@ mod tests {
         )
     }
 
-    fn scanned(entries: Vec<Value>) -> Autoruns {
+    pub(super) fn scanned(entries: Vec<Value>) -> Autoruns {
         Autoruns { last_entries: entries, scanned: true, ..Default::default() }
     }
 
@@ -679,7 +763,7 @@ mod tests {
     /// is the report module's to add.
     #[test]
     fn the_report_is_named_after_the_machine() {
-        let spec = scanned(vec![sample("a", true)]).report_spec("view", "", "");
+        let spec = scanned(vec![sample("a", true)]).report_spec("view", "", "", "en");
         let name = spec["file_name"].as_str().unwrap();
         assert!(name.ends_with("autoruns"), "{name}");
         assert!(!name.contains("20"), "{name} dated itself");
@@ -712,7 +796,7 @@ mod tests {
     fn the_scope_narrows_what_is_reported() {
         let m = scanned(vec![sample("on", true), sample("off", false), sample("on2", true)]);
         let rows = |scope: &str| -> usize {
-            m.report_spec("view", "", scope)["sections"][0]["rows"]
+            m.report_spec("view", "", scope, "en")["sections"][0]["rows"]
                 .as_array()
                 .map_or(0, Vec::len)
         };
@@ -726,25 +810,124 @@ mod tests {
     #[test]
     fn the_content_choice_still_works_and_the_format_is_the_preview() {
         let m = scanned(vec![sample("a", true)]);
-        let both = m.report_spec("view", "Tables and charts", "");
+        let both = m.report_spec("view", "Tables and charts", "", "en");
         assert_eq!(both["format"], "view");
         assert!(!both["charts"].as_array().unwrap().is_empty());
         assert!(!both["sections"].as_array().unwrap().is_empty());
 
-        let tables = m.report_spec("view", "Tables only", "");
+        let tables = m.report_spec("view", "Tables only", "", "en");
         assert!(tables["charts"].as_array().unwrap().is_empty());
-        let charts = m.report_spec("view", "Charts only", "");
+        let charts = m.report_spec("view", "Charts only", "", "en");
         assert!(charts["sections"].as_array().unwrap().is_empty());
     }
 
     /// The dialog offers nothing the module no longer honours.
     #[test]
     fn the_dialog_asks_only_what_it_uses() {
-        let json = report_config().to_string();
+        let json = report_config("en").to_string();
         assert!(!json.contains("\"format\""), "the format is the report module's: {json}");
         assert!(json.contains("\"content\""));
         assert!(json.contains("\"scope\""));
         // A pop-up opened into a tab of its own leaves that tab empty.
         assert!(!json.contains("open_in_tab"), "{json}");
+    }
+}
+
+/// The catalogue, and that both languages actually say everything.
+#[cfg(test)]
+mod i18n_tests {
+    use super::tests::{sample, scanned};
+    use super::*;
+
+    /// Every `a.b` key a locale file defines, read from the file rather than
+    /// through the catalogue: `tr` falls back to English for a key Ukrainian is
+    /// missing, so asking it would hide exactly what this is looking for.
+    fn keys(src: &str) -> Vec<String> {
+        let mut table = String::new();
+        let mut out = Vec::new();
+        for line in src.lines() {
+            let line = line.trim();
+            if line.starts_with('#') || line.is_empty() {
+                continue;
+            }
+            if let Some(name) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+                table = name.to_string();
+            } else if let Some((key, _)) = line.split_once(" = ") {
+                out.push(format!("{table}.{key}"));
+            }
+        }
+        out
+    }
+
+    /// Ukrainian says everything English says. A key only one of them has is a
+    /// screen that falls back to English mid-sentence.
+    #[test]
+    fn both_languages_say_the_same_things() {
+        let en = keys(include_str!("locales/en.toml"));
+        let uk = keys(include_str!("locales/uk.toml"));
+        assert!(!en.is_empty() && en.len() > 40, "the catalogue is suspiciously small");
+        for key in &en {
+            assert!(uk.contains(key), "uk.toml is missing {key}");
+        }
+        for key in &uk {
+            // `[module]` is the card the host draws, and English comes from
+            // limen.toml — so it is the one table Ukrainian has alone.
+            if !key.starts_with("module.") {
+                assert!(en.contains(key), "en.toml is missing {key}");
+            }
+        }
+    }
+
+    /// A screen asked for in Ukrainian comes back in Ukrainian — not a mix, and
+    /// not English with a translated title.
+    #[test]
+    fn the_screens_are_translated_not_merely_titled() {
+        let uk = idle_view("uk").to_string();
+        assert!(uk.contains("Автозапуски"), "{uk}");
+        assert!(uk.contains("Сканувати"), "{uk}");
+        assert!(!uk.contains("Scan this machine"), "English survived: {uk}");
+
+        let cfg = report_config("uk").to_string();
+        for word in ["Параметри звіту", "Лише таблиці", "Лише увімкнені", "Створити"] {
+            assert!(cfg.contains(word), "{word} is missing from {cfg}");
+        }
+        assert!(!cfg.contains("Tables only"), "English survived: {cfg}");
+
+        let entry = json!({ "source": "cron", "name": "n", "command": "c",
+                            "location": "/etc/crontab", "scope": "user", "enabled": true });
+        let mut m = Autoruns::default();
+        m.last.insert("0".into(), entry.clone());
+        let about = m.about(&json!({ "id": "0" }), "uk").to_string();
+        assert!(about.contains("Джерело") && about.contains("Розташування"), "{about}");
+    }
+
+    /// A dropdown's answer comes back in the language it was shown in, so the
+    /// module has to recognise its own words — in either language, because a
+    /// spec built elsewhere may still say "Enabled only".
+    #[test]
+    fn a_choice_is_understood_in_the_language_it_was_made_in() {
+        assert!(chose("Лише увімкнені", "report.scope_enabled"));
+        assert!(chose("Enabled only", "report.scope_enabled"));
+        assert!(!chose("Лише вимкнені", "report.scope_enabled"));
+
+        let m = scanned(vec![sample("on", true), sample("off", false)]);
+        for answer in ["Лише увімкнені", "Enabled only"] {
+            let rows = m.report_spec("view", "", answer, "uk")["sections"][0]["rows"]
+                .as_array()
+                .unwrap()
+                .len();
+            assert_eq!(rows, 1, "{answer} did not narrow the report");
+        }
+    }
+
+    /// The report a Ukrainian screen asks for is a Ukrainian report: its title,
+    /// its headings and its columns, not only the rows it carries.
+    #[test]
+    fn the_report_speaks_the_language_it_was_asked_in() {
+        let spec = scanned(vec![sample("a", true)]).report_spec("view", "", "", "uk");
+        assert_eq!(spec["title"], "Звіт про автозапуски");
+        assert_eq!(spec["sections"][0]["heading"], "Записи автозапуску");
+        assert_eq!(spec["sections"][0]["columns"][0], "Джерело");
+        assert!(spec["summary"][0].as_str().unwrap().starts_with("Усього записів"));
     }
 }
