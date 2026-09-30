@@ -1,6 +1,7 @@
 [module]
 name = "autoruns"
-version = "0.2.0"
+display_name = "Local autoruns"
+version = "0.3.0"
 language = "native"
 entry = "autoruns"
 abi = "native"

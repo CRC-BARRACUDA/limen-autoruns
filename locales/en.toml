@@ -1,0 +1,124 @@
+# Every word this module puts on screen. The module card's own title and
+# description are not here — the host reads those from limen.toml for English.
+
+[ui]
+title = "Autoruns"
+idle_hint = "Scan this machine for programs configured to start automatically."
+scan = "Scan"
+refresh = "Refresh"
+rows_hint = "Right-click a row for actions; double-click to open its details."
+unsigned_count = "{n} of them run a program that is not signed, or whose signature does not hold."
+all = "Everything ({n})"
+page = "Page {page} of {pages} — showing {from}–{to} of {total}"
+prev = "‹ Previous"
+next = "Next ›"
+report = "Make Report"
+
+[col]
+source = "Source"
+name = "Name"
+command = "Command"
+publisher = "Publisher"
+scope = "Scope"
+enabled = "Enabled"
+location = "Location"
+
+[val]
+yes = "yes"
+no = "no"
+
+[menu]
+about = "About"
+open_registry = "Open in Registry"
+open_path = "Open path"
+open_script = "Open script"
+reveal = "Show in Explorer"
+edit = "Open in Notepad"
+show_value = "Show value in Notepad"
+
+[detail]
+sig_kind = "Signature"
+catalog = "In a Windows catalogue, not in the file"
+embedded = "In the file itself"
+title = "Autorun"
+missing = "This entry isn't in the latest scan — re-scan and try again."
+
+[report]
+config_title = "Make Report"
+options = "Report options"
+include = "Include"
+show = "Show"
+generate = "Generate"
+content_both = "Tables and charts"
+content_tables = "Tables only"
+content_charts = "Charts only"
+scope_all = "All entries"
+scope_enabled = "Enabled only"
+scope_disabled = "Disabled only"
+title = "Autoruns Report"
+chart = "Entries by source"
+section = "Autostart entries"
+total = "Total entries: {n}"
+enabled = "Enabled: {n}"
+subtitle = "{total} entries · {enabled} enabled"
+subtitle_host = "{host} · {total} entries · {enabled} enabled"
+written = "Report written"
+failed = "Couldn't build the report"
+
+# The registry value, written to a file and opened as text: for a Run key the
+# value *is* the whole autorun, so there is no script to read.
+[value]
+key = "Key"
+name = "Value"
+source = "Source"
+scope = "Scope"
+
+# What each table holds. One long list answers "what starts on this machine" and
+# nothing else; these are the questions people actually bring to an autorun list.
+[family]
+logon = "Logon"
+explorer = "Explorer"
+browser = "Internet Explorer"
+boot = "Boot and known DLLs"
+hijack = "Image hijacks and AppInit"
+lsa = "LSA providers"
+network = "Network providers"
+print = "Print monitors"
+office = "Office add-ins and codecs"
+startup = "Startup folders"
+scheduled = "Scheduled"
+services = "Services and drivers"
+other = "Other"
+
+# What signed the program an entry points at. Said in words as well as in
+# colour: the colour finds the row, the word is the finding.
+[sig]
+verified = "(Verified)"
+not_verified = "(Not verified)"
+missing = "File not found"
+not_checked = "(Not checked)"
+
+# The filter window: what to keep from the scan already in hand. Nothing here
+# reads the machine again.
+[filter]
+title = "Filter"
+open = "Filter"
+open_n = "Filter ({n})"
+apply = "Apply"
+clear = "Clear filter"
+close = "Close"
+add = "Add another word"
+remove = "Remove"
+states = "Signature"
+states_hint = "Keep only entries whose program is in one of these states. Nothing ticked keeps them all."
+terms = "Words"
+terms_hint = "Every word must appear somewhere in the row — source, name, command, publisher or location. Each one narrows further."
+term_ph = "part of a name, path or publisher…"
+
+[filter.state]
+valid = "Signed and trusted"
+unsigned = "Not signed"
+invalid = "Signature does not hold"
+unknown = "Could not be checked"
+missing = "File not found"
+none = "Nothing to verify"

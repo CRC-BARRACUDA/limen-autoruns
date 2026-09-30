@@ -3,7 +3,7 @@
 
 [package]
 name = "autoruns"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Lists programs that auto-start on THIS machine (Windows Run keys / Linux systemd, cron, autostart)."
@@ -11,11 +11,13 @@ repository = "https://github.com/CRC-BARRACUDA/limen-autoruns"
 
 [lib]
 name = "autoruns"
-path = "lib.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
 limen-sdk-rust = { git = "https://github.com/CRC-BARRACUDA/Limen.git" }
+# For `NoConsole`: the signature check shells out to PowerShell, and a console
+# window must not flash up on every scan in a release GUI build.
+limen-proto = { git = "https://github.com/CRC-BARRACUDA/Limen.git" }
 
 # Windows-only: read the registry Run/RunOnce keys.
 [target.'cfg(windows)'.dependencies]
